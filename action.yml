@@ -1,0 +1,81 @@
+name: Validate NuGet Release Packages from Codebelt
+description: An opinionated action that validates packed NuGet versions and confirms that any existing package bytes on nuget.org are identical.
+inputs:
+  package-directory:
+    description: Directory containing the packed .nupkg files.
+    required: true
+  version:
+    description: Human-selected SemVer release version without the v prefix.
+    required: true
+outputs:
+  package-count:
+    description: Number of packages validated.
+    value: ${{ steps.validate.outputs.package-count }}
+  new-package-count:
+    description: Number of package versions not yet present on NuGet.
+    value: ${{ steps.validate.outputs.new-package-count }}
+  identical-package-count:
+    description: Number of already-published package versions with matching SHA-512 content.
+    value: ${{ steps.validate.outputs.identical-package-count }}
+runs:
+  using: composite
+  steps:
+    - name: Require .NET 10 SDK
+      shell: pwsh
+      run: |
+        $dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
+        if ($null -eq $dotnet) {
+          throw "This action requires the .NET 10 SDK because it runs a file-based app with 'dotnet run --file'. Install .NET 10 before invoking codebeltnet/nuget-release-validate."
+        }
+
+        $installedSdkLines = @(& dotnet --list-sdks 2>&1)
+        if ($LASTEXITCODE -ne 0) {
+          throw "Failed to enumerate installed .NET SDKs with 'dotnet --list-sdks'."
+        }
+
+        $installedSdkVersions = @(
+          foreach ($line in $installedSdkLines) {
+            $version = ($line -split '\s+', 2)[0]
+            if ($version) {
+              $version
+            }
+          }
+        )
+        $compatibleSdkVersions = @(
+          foreach ($version in $installedSdkVersions) {
+            if ($version -match '^(?<major>\d+)\.' -and [int]$Matches.major -ge 10) {
+              $version
+            }
+          }
+        )
+        if ($compatibleSdkVersions.Count -eq 0) {
+          $installedSdkDisplay = if ($installedSdkVersions.Count -gt 0) {
+            $installedSdkVersions -join ', '
+          } else {
+            'none'
+          }
+
+          throw "This action requires the .NET 10 SDK or newer because it runs a file-based app with 'dotnet run --file'. Install .NET 10 or newer before invoking codebeltnet/nuget-release-validate. Installed SDKs: $installedSdkDisplay"
+        }
+
+    - id: validate
+      name: Validate NuGet package content
+      shell: pwsh
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        PACKAGE_DIRECTORY: ${{ inputs.package-directory }}
+        RELEASE_VERSION: ${{ inputs.version }}
+      run: |
+        Push-Location $env:ACTION_PATH
+        try {
+          & dotnet run --file "$env:ACTION_PATH/validate-nuget-release.cs" -- "$env:PACKAGE_DIRECTORY" "$env:RELEASE_VERSION"
+          if ($LASTEXITCODE -ne 0) {
+            throw "NuGet package validation failed with exit code $LASTEXITCODE."
+          }
+        }
+        finally {
+          Pop-Location
+        }
+branding:
+  icon: 'umbrella'
+  color: 'blue'
